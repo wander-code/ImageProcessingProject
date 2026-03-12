@@ -54,7 +54,7 @@ for i = 1:numel(catColorInputs)
     outFile = fullfile(outputDir, sprintf('%s_COLOR_OUTPUT.jpg', name));
     safeImwrite(Iout, outFile);
 
-    figure('Name', sprintf('Color Cat #%d', i), 'NumberTitle', 'off');
+    figure('Name', sprintf('Task 1 - Color Subject #%d', i), 'NumberTitle', 'off');
     subplot(1,2,1); imshow(I);    title(sprintf('Input: %s', inFile), 'Interpreter', 'none');
     subplot(1,2,2); imshow(Iout); title(sprintf('Output: %s', outFile), 'Interpreter', 'none');
 
@@ -77,7 +77,7 @@ for i = 1:numel(landscapeInputs)
     outFile = fullfile(outputDir, sprintf('%s_SEGMENT_OUTPUT.jpg', name));
     safeImwrite(segRGB, outFile);
 
-    figure('Name', sprintf('Landscape Segment #%d', i), 'NumberTitle', 'off');
+    figure('Name', sprintf('Task 2 - Landscape Segmentation #%d', i), 'NumberTitle', 'off');
     subplot(2,3,1); imshow(I); title(sprintf('Input: %s', inFile), 'Interpreter', 'none');
     subplot(2,3,2); imshow(masks.sky); title('Sky Mask');
     subplot(2,3,3); imshow(masks.vegetation); title('Vegetation Mask');
@@ -103,7 +103,7 @@ for i = 1:numel(blurInputs)
     outFile = fullfile(outputDir, sprintf('%s_BLUR_OUTPUT.jpg', name));
     safeImwrite(Iout, outFile);
 
-    figure('Name', sprintf('Blur Background #%d', i), 'NumberTitle', 'off');
+    figure('Name', sprintf('Task 3 - Background Blur #%d', i), 'NumberTitle', 'off');
     subplot(1,2,1); imshow(I);    title(sprintf('Input: %s', inFile), 'Interpreter', 'none');
     subplot(1,2,2); imshow(Iout); title(sprintf('Output: %s', outFile), 'Interpreter', 'none');
 
@@ -143,112 +143,104 @@ fullPath = '';
 end
 
 function Iout = colorCatOrange(I)
-% Detect mostly gray cat pixels then recolor with orange tone.
+% Apply a golden/orange tone to the primary foreground subject.
+% This works for the cat samples and the renamed MakeUsGolden.jpg input.
 
 I = im2uint8(I);
-R = I(:,:,1); G = I(:,:,2); B = I(:,:,3);
+subjectMask = getPrimarySubjectMask(I);
 
-% Grayness detector + brightness constraints
-grayLike = abs(int16(R)-int16(G)) < 18 & ...
-           abs(int16(R)-int16(B)) < 28 & ...
-           abs(int16(G)-int16(B)) < 28;
-
-brightness = rgb2gray(I) > 40 & rgb2gray(I) < 230;
-
-% Reject highly saturated wood/floor colors (usually red-dominant)
-notFloor = (int16(R) - int16(B)) < 40;
-
-mask0 = grayLike & brightness & notFloor;
-
-% Keep coherent object, clean noise, fill holes
-mask = bwareaopen(mask0, 600);
-mask = imclose(mask, strel('disk', 8));
-mask = imfill(mask, 'holes');
-mask = bwareafilt(mask, 1);
-
-% Refine edge with active contour when possible
-try
-    mask = activecontour(rgb2gray(I), mask, 50, 'edge');
-catch
-    % If activecontour unavailable in some MATLAB versions/toolboxes,
-    % continue with morphology-only mask.
+% Fallback: if subject detection fails, use neutral gray detector.
+if nnz(subjectMask) < 0.01 * numel(subjectMask)
+    G = rgb2gray(I);
+    subjectMask = abs(double(I(:,:,1)) - double(I(:,:,2))) < 24 & ...
+                  abs(double(I(:,:,1)) - double(I(:,:,3))) < 30 & ...
+                  abs(double(I(:,:,2)) - double(I(:,:,3))) < 30 & ...
+                  G > 35 & G < 240;
+    subjectMask = bwareaopen(subjectMask, 500);
+    if nnz(subjectMask) > 0
+        subjectMask = bwareafilt(subjectMask, 1);
+    end
 end
 
-% Feather edge for natural blend
-alpha = imgaussfilt(double(mask), 8);
+subjectMask = imclose(subjectMask, strel('disk', 7));
+subjectMask = imfill(subjectMask, 'holes');
+alpha = imgaussfilt(double(subjectMask), 6);
 alpha = max(0, min(alpha, 1));
 
 Id = im2double(I);
 J = Id;
 
-% Orange grading: boost red, slight green, reduce blue
-J(:,:,1) = min(1, Id(:,:,1) * 1.35 + 0.16 * alpha);
-J(:,:,2) = min(1, Id(:,:,2) * 1.10 + 0.08 * alpha);
-J(:,:,3) = max(0, Id(:,:,3) * 0.55 - 0.04 * alpha);
+% Golden grade with stronger red/green and controlled blue reduction.
+J(:,:,1) = min(1, Id(:,:,1) * 1.28 + 0.18 * alpha);
+J(:,:,2) = min(1, Id(:,:,2) * 1.12 + 0.08 * alpha);
+J(:,:,3) = max(0, Id(:,:,3) * 0.70 - 0.03 * alpha);
 
-% Blend only on detected cat region
 for c = 1:3
     Id(:,:,c) = (1 - alpha) .* Id(:,:,c) + alpha .* J(:,:,c);
 end
 
-% Optional gentle denoising only in changed region
 Iout = im2uint8(Id);
-Iout = imbilatfilt(Iout, 10, 25);
-Iout(~repmat(mask,[1 1 3])) = I(~repmat(mask,[1 1 3]));
 end
 
 function safeImwrite(I, outFile)
-% Always ensure parent output directory exists before writing.
-% This avoids errors when running script sections out-of-order.
+% Ensure output folder exists before saving.
 
 [parentDir, ~, ~] = fileparts(outFile);
 if ~isempty(parentDir) && ~exist(parentDir, 'dir')
     [ok, msg, msgID] = mkdir(parentDir);
     if ~ok
-        error('safeImwrite:mkdirFailed', 'Failed to create output folder: %s (%s: %s)', parentDir, msgID, msg);
+        error('safeImwrite:mkdirFailed', ...
+              'Failed to create output folder: %s (%s: %s)', ...
+              parentDir, msgID, msg);
     end
 end
 imwrite(I, outFile);
 end
 
 function [segRGB, masks] = segmentLandscape(I)
-% Segment landscape into classes approximating sample output:
-% sky = blue, vegetation = green, man-made/other = red
+% Segment landscape into sky (blue), vegetation (green), man-made (red).
 
 I = im2uint8(I);
+[h, w, ~] = size(I);
+Id = im2double(I);
 HSV = rgb2hsv(I);
 H = HSV(:,:,1); S = HSV(:,:,2); V = HSV(:,:,3);
 
-R = I(:,:,1); G = I(:,:,2); B = I(:,:,3);
-
-% Sky: bright, low-to-medium saturation, often in blue/cyan hue.
-sky = ((H > 0.50 & H < 0.72) & S < 0.45 & V > 0.45) | ...
-      (V > 0.70 & S < 0.20);
-
-% Restrict sky to upper image to avoid false positives
-upperMask = false(size(sky));
-upperMask(1:round(size(sky,1)*0.65), :) = true;
-sky = sky & upperMask;
-sky = imclose(sky, strel('disk', 5));
+% Sky detection: blue/cyan or bright low-saturation clouds in upper area.
+upper = false(h, w);
+upper(1:round(0.68*h), :) = true;
+sky = (((H > 0.52 & H < 0.74) & S < 0.55 & V > 0.35) | ...
+       (V > 0.72 & S < 0.23)) & upper;
+sky = imclose(sky, strel('disk', 6));
 sky = imopen(sky, strel('disk', 3));
 sky = imfill(sky, 'holes');
-sky = bwareaopen(sky, 800);
+if nnz(sky) > 0
+    sky = bwareafilt(sky, 1);
+end
 
-% Vegetation: green dominant regions
-vegetation = (G > R + 8) & (G > B + 8) & (S > 0.18) & ~sky;
-vegetation = imopen(vegetation, strel('disk', 3));
+% Vegetation from excess green index, excluding sky.
+R = Id(:,:,1); G = Id(:,:,2); B = Id(:,:,3);
+excessGreen = 2*G - R - B;
+vegSeed = excessGreen > 0.06 & G > 0.22 & S > 0.15 & ~sky;
+vegSeed = imopen(vegSeed, strel('disk', 2));
+vegSeed = imclose(vegSeed, strel('disk', 5));
+vegSeed = bwareaopen(vegSeed, 120);
+
+% Grow vegetation over textured green neighborhoods.
+localGreen = imgaussfilt(double(vegSeed), 4) > 0.05;
+vegetation = (vegSeed | (localGreen & G > R & G > B)) & ~sky;
+vegetation = imopen(vegetation, strel('disk', 2));
 vegetation = imclose(vegetation, strel('disk', 4));
-vegetation = bwareaopen(vegetation, 200);
+vegetation = bwareaopen(vegetation, 120);
 
-% Remaining regions -> man-made/other
 manmade = ~(sky | vegetation);
-manmade = bwareaopen(manmade, 100);
+manmade = imopen(manmade, strel('disk', 1));
+manmade = bwareaopen(manmade, 60);
 
-% Color-coded output map
 segRGB = zeros(size(I), 'uint8');
-segRGB(:,:,1) = uint8(manmade) * 255;     % red
-segRGB(:,:,2) = uint8(vegetation) * 255;  % green
-segRGB(:,:,3) = uint8(sky) * 255;         % blue
+segRGB(:,:,1) = uint8(manmade) * 255;
+segRGB(:,:,2) = uint8(vegetation) * 255;
+segRGB(:,:,3) = uint8(sky) * 255;
 
 masks.sky = sky;
 masks.vegetation = vegetation;
@@ -256,55 +248,74 @@ masks.manmade = manmade;
 end
 
 function Iout = blurBackgroundKeepCat(I)
-% Keep cat in focus and blur background for portrait effect.
+% Keep the central foreground subject in focus and blur the background.
 
 I = im2uint8(I);
-HSV = rgb2hsv(I);
-H = HSV(:,:,1); S = HSV(:,:,2); V = HSV(:,:,3);
-R = I(:,:,1); G = I(:,:,2); B = I(:,:,3);
-
-% Gray-ish fur detector + moderate brightness
-grayFur = abs(int16(R)-int16(G)) < 20 & ...
-          abs(int16(R)-int16(B)) < 34 & ...
-          abs(int16(G)-int16(B)) < 34 & ...
-          V > 0.15 & V < 0.95 & S < 0.35;
-
-% Focus center prior (cat usually near center in sample)
-[h, w, ~] = size(I);
-[X, Y] = meshgrid(1:w, 1:h);
-cx = w * 0.5; cy = h * 0.6;
-rad = ((X - cx).^2)/(0.35*w)^2 + ((Y - cy).^2)/(0.45*h)^2;
-centerPrior = rad < 1.4;
-
-mask0 = grayFur & centerPrior;
-mask = bwareaopen(mask0, 500);
-mask = imclose(mask, strel('disk', 9));
-mask = imfill(mask, 'holes');
-mask = bwareafilt(mask, 1);
-
-% Slight active contour refinement (fallback if unavailable)
-try
-    mask = activecontour(rgb2gray(I), mask, 40, 'edge');
-catch
+subjectMask = getPrimarySubjectMask(I);
+subjectMask = imclose(subjectMask, strel('disk', 8));
+subjectMask = imfill(subjectMask, 'holes');
+subjectMask = bwareaopen(subjectMask, 1500);
+if nnz(subjectMask) > 0
+    subjectMask = bwareafilt(subjectMask, 1);
 end
 
-% Soft transition on edge
-alpha = imgaussfilt(double(mask), 10);
+alpha = imgaussfilt(double(subjectMask), 9);
 alpha = max(0, min(alpha, 1));
 alpha3 = repmat(alpha, [1 1 3]);
 
-% Build blurred background (combine Gaussian + bilateral for smoother bokeh)
-Ib = im2double(I);
-bg1 = imgaussfilt(Ib, 6);
-bg2 = imbilatfilt(im2uint8(bg1), 15, 30);
-bg = im2double(bg2);
+Id = im2double(I);
+% Stronger blur to match requested portrait effect.
+bg = imgaussfilt(Id, 9);
+bg = im2double(imbilatfilt(im2uint8(bg), 18, 40));
 
-% Composite: subject sharp, background blurred
-J = alpha3 .* Ib + (1 - alpha3) .* bg;
-
-% Mild unsharp on subject region only
-sharp = imsharpen(J, 'Radius', 1.2, 'Amount', 0.8);
+J = alpha3 .* Id + (1 - alpha3) .* bg;
+sharp = imsharpen(J, 'Radius', 1.4, 'Amount', 1.0);
 J = alpha3 .* sharp + (1 - alpha3) .* J;
 
 Iout = im2uint8(J);
 end
+
+function mask = getPrimarySubjectMask(I)
+% Estimate main foreground subject using center prior + active contour.
+
+[h, w, ~] = size(I);
+G = im2double(rgb2gray(I));
+
+% Center-lower prior works for cat and portrait-like images.
+seed = false(h, w);
+seed(round(0.24*h):round(0.95*h), round(0.20*w):round(0.80*w)) = true;
+
+% Improve edge contrast before contour evolution.
+Gf = imgaussfilt(G, 1.2);
+try
+    mask = activecontour(Gf, seed, 140, 'edge');
+catch
+    % Fallback if activecontour is unavailable.
+    BW = imbinarize(adapthisteq(Gf), 'adaptive', 'Sensitivity', 0.50);
+    BW = imclose(BW, strel('disk', 6));
+    mask = BW & seed;
+end
+
+mask = imclose(mask, strel('disk', 5));
+mask = imfill(mask, 'holes');
+mask = bwareaopen(mask, round(0.002 * h * w));
+
+% Keep component nearest image center.
+cc = bwconncomp(mask);
+if cc.NumObjects > 1
+    stats = regionprops(cc, 'Centroid', 'Area');
+    cxy = [w/2, h*0.62];
+    score = inf(cc.NumObjects, 1);
+    for k = 1:cc.NumObjects
+        d = norm(stats(k).Centroid - cxy);
+        score(k) = d - 0.0008 * stats(k).Area;
+    end
+    [~, idx] = min(score);
+    keep = false(h, w);
+    keep(cc.PixelIdxList{idx}) = true;
+    mask = keep;
+elseif cc.NumObjects == 0
+    mask = seed;
+end
+end
+
