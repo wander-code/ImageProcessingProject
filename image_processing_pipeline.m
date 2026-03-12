@@ -9,6 +9,9 @@
 
 clc; clear; close all;
 
+% Use script folder as stable base path (works even if Current Folder differs).
+scriptDir = getScriptDir();
+
 %% ---------------------- USER CONFIGURATION ---------------------------- %%
 catColorInputs = { ...
     'IMG_8274.jpg', ...
@@ -25,7 +28,7 @@ blurInputs = { ...
     'BlurUs.jpg' ...
 };
 
-outputDir = 'outputs';
+outputDir = fullfile(scriptDir, 'outputs');
 if ~exist(outputDir, 'dir')
     mkdir(outputDir);
 end
@@ -38,12 +41,13 @@ fprintf('==============================================\n\n');
 %% 1) COLOR THE CAT (2 images)
 for i = 1:numel(catColorInputs)
     inFile = catColorInputs{i};
-    if ~isfile(inFile)
+    inPath = resolveInputPath(inFile, scriptDir);
+    if isempty(inPath)
         warning('Skipped (file not found): %s', inFile);
         continue;
     end
 
-    I = imread(inFile);
+    I = imread(inPath);
     Iout = colorCatOrange(I);
 
     [~, name, ~] = fileparts(inFile);
@@ -60,12 +64,13 @@ end
 %% 2) SEGMENT LANDSCAPE (2 images)
 for i = 1:numel(landscapeInputs)
     inFile = landscapeInputs{i};
-    if ~isfile(inFile)
+    inPath = resolveInputPath(inFile, scriptDir);
+    if isempty(inPath)
         warning('Skipped (file not found): %s', inFile);
         continue;
     end
 
-    I = imread(inFile);
+    I = imread(inPath);
     [segRGB, masks] = segmentLandscape(I);
 
     [~, name, ~] = fileparts(inFile);
@@ -85,12 +90,13 @@ end
 %% 3) BLUR THE BACKGROUND (2 images)
 for i = 1:numel(blurInputs)
     inFile = blurInputs{i};
-    if ~isfile(inFile)
+    inPath = resolveInputPath(inFile, scriptDir);
+    if isempty(inPath)
         warning('Skipped (file not found): %s', inFile);
         continue;
     end
 
-    I = imread(inFile);
+    I = imread(inPath);
     Iout = blurBackgroundKeepCat(I);
 
     [~, name, ~] = fileparts(inFile);
@@ -104,9 +110,38 @@ for i = 1:numel(blurInputs)
     fprintf('[DONE] Blur Background: %s -> %s\n', inFile, outFile);
 end
 
-fprintf('\nAll available tasks finished. Check "%s" folder.\n', outputDir);
+fprintf('\nAll available tasks finished. Check output folder:\n%s\n', outputDir);
 
 %% =========================== FUNCTIONS =============================== %%
+function scriptDir = getScriptDir()
+% Return folder containing this script.
+
+scriptPath = mfilename('fullpath');
+if isempty(scriptPath)
+    % Fallback for Live Editor/section execution contexts.
+    scriptDir = pwd;
+else
+    scriptDir = fileparts(scriptPath);
+end
+end
+
+function fullPath = resolveInputPath(inFile, scriptDir)
+% Resolve input by checking absolute path, current folder, then script folder.
+
+if isfile(inFile)
+    fullPath = inFile;
+    return;
+end
+
+candidate = fullfile(scriptDir, inFile);
+if isfile(candidate)
+    fullPath = candidate;
+    return;
+end
+
+fullPath = '';
+end
+
 function Iout = colorCatOrange(I)
 % Detect mostly gray cat pixels then recolor with orange tone.
 
@@ -168,7 +203,10 @@ function safeImwrite(I, outFile)
 
 [parentDir, ~, ~] = fileparts(outFile);
 if ~isempty(parentDir) && ~exist(parentDir, 'dir')
-    mkdir(parentDir);
+    [ok, msg, msgID] = mkdir(parentDir);
+    if ~ok
+        error('safeImwrite:mkdirFailed', 'Failed to create output folder: %s (%s: %s)', parentDir, msgID, msg);
+    end
 end
 imwrite(I, outFile);
 end
