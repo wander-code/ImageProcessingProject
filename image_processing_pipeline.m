@@ -12,17 +12,17 @@ clc; clear; close all;
 %% ---------------------- USER CONFIGURATION ---------------------------- %%
 catColorInputs = { ...
     'IMG_8274.jpg', ...
-    'IMG_8274_2.jpg' ...
+    'MakeUsGolden.jpg' ...
 };
 
 landscapeInputs = { ...
     'IMG_8870.jpg', ...
-    'IMG_8870_2.jpg' ...
+    'SegmentUs.jpg' ...
 };
 
 blurInputs = { ...
     'IMG_8236.jpg', ...
-    'IMG_8236_2.jpg' ...
+    'BlurUs.jpg' ...
 };
 
 outputDir = 'outputs';
@@ -48,7 +48,7 @@ for i = 1:numel(catColorInputs)
 
     [~, name, ~] = fileparts(inFile);
     outFile = fullfile(outputDir, sprintf('%s_COLOR_OUTPUT.jpg', name));
-    imwrite(Iout, outFile);
+    safeImwrite(Iout, outFile);
 
     figure('Name', sprintf('Color Cat #%d', i), 'NumberTitle', 'off');
     subplot(1,2,1); imshow(I);    title(sprintf('Input: %s', inFile), 'Interpreter', 'none');
@@ -70,7 +70,7 @@ for i = 1:numel(landscapeInputs)
 
     [~, name, ~] = fileparts(inFile);
     outFile = fullfile(outputDir, sprintf('%s_SEGMENT_OUTPUT.jpg', name));
-    imwrite(segRGB, outFile);
+    safeImwrite(segRGB, outFile);
 
     figure('Name', sprintf('Landscape Segment #%d', i), 'NumberTitle', 'off');
     subplot(2,3,1); imshow(I); title(sprintf('Input: %s', inFile), 'Interpreter', 'none');
@@ -95,7 +95,7 @@ for i = 1:numel(blurInputs)
 
     [~, name, ~] = fileparts(inFile);
     outFile = fullfile(outputDir, sprintf('%s_BLUR_OUTPUT.jpg', name));
-    imwrite(Iout, outFile);
+    safeImwrite(Iout, outFile);
 
     figure('Name', sprintf('Blur Background #%d', i), 'NumberTitle', 'off');
     subplot(1,2,1); imshow(I);    title(sprintf('Input: %s', inFile), 'Interpreter', 'none');
@@ -160,6 +160,17 @@ end
 Iout = im2uint8(Id);
 Iout = imbilatfilt(Iout, 10, 25);
 Iout(~repmat(mask,[1 1 3])) = I(~repmat(mask,[1 1 3]));
+end
+
+function safeImwrite(I, outFile)
+% Always ensure parent output directory exists before writing.
+% This avoids errors when running script sections out-of-order.
+
+[parentDir, ~, ~] = fileparts(outFile);
+if ~isempty(parentDir) && ~exist(parentDir, 'dir')
+    mkdir(parentDir);
+end
+imwrite(I, outFile);
 end
 
 function [segRGB, masks] = segmentLandscape(I)
