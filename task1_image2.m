@@ -1,5 +1,5 @@
 %% TASK 1 - IMAGE 2
-% Make only the 3 people in front golden
+% Segment only the 3 people, then make them golden
 % File: task1_img2.m
 
 clc;
@@ -8,97 +8,97 @@ close all;
 
 %% Load image
 I = imread('MakeUsGolden.jpg');
-[rows, cols, ~] = size(I);
 I_double = im2double(I);
+[rows, cols, ~] = size(I);
 
-%% STEP 1: Build superpixels for GrabCut
-% grabcut needs a label matrix L
-L = superpixels(I, 1200);
+%% STEP 1: Polygon masks for each person
+% These are normalized coordinates based on this image,
+% so they scale correctly if the image size changes.
 
-%% STEP 2: ROI covering the 3 people
-% Everything outside this ROI is treated as background
-roi = false(rows, cols);
-roi(round(rows*0.20):round(rows*0.99), ...
-    round(cols*0.01):round(cols*0.99)) = true;
+leftPts = [ ...
+    0.1367 0.9993
+    0.1392 0.8203
+    0.1465 0.7031
+    0.1562 0.5859
+    0.1660 0.4948
+    0.1855 0.4036
+    0.2246 0.3516
+    0.2734 0.3255
+    0.3320 0.3385
+    0.3711 0.4036
+    0.4004 0.5339
+    0.4199 0.6771
+    0.4395 0.8594
+    0.4541 0.9993
+];
 
-%% STEP 3: Sure foreground mask
-% Smaller boxes inside each person so the algorithm knows
-% these regions definitely belong to the subjects
+centerPts = [ ...
+    0.2734 0.9993
+    0.2832 0.8854
+    0.3027 0.7552
+    0.3320 0.6185
+    0.3711 0.4688
+    0.4199 0.3906
+    0.4688 0.3516
+    0.5273 0.3385
+    0.5957 0.3516
+    0.6445 0.3906
+    0.6836 0.4688
+    0.7129 0.5990
+    0.7373 0.7552
+    0.7568 0.8854
+    0.7715 0.9993
+];
 
-foremask = false(rows, cols);
+rightPts = [ ...
+    0.6543 0.9993
+    0.6641 0.8464
+    0.6836 0.7161
+    0.7031 0.5599
+    0.7227 0.4427
+    0.7617 0.3776
+    0.8105 0.3646
+    0.8594 0.3776
+    0.8984 0.4297
+    0.9277 0.5339
+    0.9570 0.7031
+    0.9814 0.8594
+    0.9912 0.9993
+];
 
-% LEFT person - inner torso + face/head
-foremask(round(rows*0.49):round(rows*0.86), ...
-         round(cols*0.05):round(cols*0.22)) = true;
-foremask(round(rows*0.41):round(rows*0.57), ...
-         round(cols*0.06):round(cols*0.19)) = true;
+% Convert normalized points to pixel coordinates
+leftX   = round(leftPts(:,1)   * cols);
+leftY   = round(leftPts(:,2)   * rows);
+centerX = round(centerPts(:,1) * cols);
+centerY = round(centerPts(:,2) * rows);
+rightX  = round(rightPts(:,1)  * cols);
+rightY  = round(rightPts(:,2)  * rows);
 
-% CENTER person - inner torso + face/head
-foremask(round(rows*0.50):round(rows*0.91), ...
-         round(cols*0.31):round(cols*0.50)) = true;
-foremask(round(rows*0.35):round(rows*0.56), ...
-         round(cols*0.30):round(cols*0.48)) = true;
+% Create masks
+maskLeft   = poly2mask(leftX, leftY, rows, cols);
+maskCenter = poly2mask(centerX, centerY, rows, cols);
+maskRight  = poly2mask(rightX, rightY, rows, cols);
 
-% RIGHT person - inner torso + face/head
-foremask(round(rows*0.49):round(rows*0.85), ...
-         round(cols*0.68):round(cols*0.82)) = true;
-foremask(round(rows*0.39):round(rows*0.56), ...
-         round(cols*0.67):round(cols*0.82)) = true;
+%% STEP 2: Combine masks
+finalMask = maskLeft | maskCenter | maskRight;
 
-%% STEP 4: Sure background mask
-% Mark obvious background so the result does not spread too much
-
-backmask = false(rows, cols);
-
-% Top band: sky/building/trees
-backmask(1:round(rows*0.22), :) = true;
-
-% Very thin left/right borders
-backmask(:, 1:round(cols*0.01)) = true;
-backmask(:, round(cols*0.99):end) = true;
-
-% Upper-right tree/building edge
-backmask(round(rows*0.18):round(rows*0.45), ...
-         round(cols*0.88):cols) = true;
-
-% Keep foreground seeds from being overwritten
-backmask(foremask) = false;
-
-%% STEP 5: GrabCut segmentation
-BW = grabcut(I, L, roi, foremask, backmask, 'MaximumIterations', 5);
-
-%% STEP 6: Cleanup
-BW = imfill(BW, 'holes');
-BW = bwareaopen(BW, 2500);
-BW = imclose(BW, strel('disk', 11));
-BW = imopen(BW, strel('disk', 3));
-
-%% STEP 7: Keep only components that overlap the foreground seeds
-cc = bwconncomp(BW);
-finalMask = false(size(BW));
-
-for k = 1:cc.NumObjects
-    pix = cc.PixelIdxList{k};
-    if any(foremask(pix))
-        finalMask(pix) = true;
-    end
-end
-
-%% STEP 8: Final face/hair-friendly refinement
+%% STEP 3: Smooth and refine mask
+finalMask = imclose(finalMask, strel('disk', 18));
 finalMask = imfill(finalMask, 'holes');
-finalMask = imclose(finalMask, strel('disk', 9));   % closes hair gaps
-finalMask = imdilate(finalMask, strel('disk', 2));  % recovers edges
-finalMask = imfill(finalMask, 'holes');
+finalMask = imopen(finalMask, strel('disk', 4));
 
-%% STEP 9: Feather for smoother color blending
+% Slight dilation so edges of hair / shoulders are not cut
+finalMask = imdilate(finalMask, strel('disk', 3));
+
+%% STEP 4: Feather mask for smoother blending
 featherMask = imgaussfilt(double(finalMask), 8);
 
-%% STEP 10: Preview detected people only
+%% STEP 5: Detected people only preview
 maskRGB = repmat(finalMask, [1 1 3]);
 I_detected = I;
 I_detected(~maskRGB) = 0;
 
-%% STEP 11: Golden recolor only on the masked people
+%% STEP 6: Make only the people golden
 I_gold = I_double;
 
 goldR = min(I_double(:,:,1) + 0.28, 1);
@@ -109,11 +109,11 @@ I_gold(:,:,1) = (1 - featherMask).*I_double(:,:,1) + featherMask.*goldR;
 I_gold(:,:,2) = (1 - featherMask).*I_double(:,:,2) + featherMask.*goldG;
 I_gold(:,:,3) = (1 - featherMask).*I_double(:,:,3) + featherMask.*goldB;
 
-I_gold_uint8 = im2uint8(I_gold);
+%% STEP 7: Convert outputs
 mask_uint8 = uint8(finalMask) * 255;
-seedPreview = uint8(foremask | backmask) * 255;
+I_gold_uint8 = im2uint8(I_gold);
 
-%% STEP 12: Show results
+%% STEP 8: Show results
 figure('Name', 'TASK 1 - IMAGE 2', 'NumberTitle', 'off');
 
 subplot(2,3,1);
@@ -121,8 +121,8 @@ imshow(I);
 title('Original');
 
 subplot(2,3,2);
-imshow(foremask);
-title('Foreground Seeds');
+imshow(maskLeft | maskCenter | maskRight);
+title('Person Masks');
 
 subplot(2,3,3);
 imshow(finalMask);
@@ -140,23 +140,22 @@ subplot(2,3,6);
 imshow(I_gold_uint8);
 title('Golden People Only');
 
-%% STEP 13: Save outputs
+%% STEP 9: Save outputs
 imwrite(I_detected, 'task1_img2_detected_people.jpg');
 imwrite(mask_uint8, 'task1_img2_mask.jpg');
 imwrite(I_gold_uint8, 'task1_img2_golden_people.jpg');
 
 %% Console output
-fprintf('==============================================\\n');
-fprintf('         PROJECT IN IMAGE PROCESSING\\n');
-fprintf('==============================================\\n');
-fprintf(' Task       : Task 1 - Image 2\\n');
-fprintf(' Process    : GrabCut People Segmentation + Golden Recolor\\n');
-fprintf(' Output     : Completed successfully\\n');
-fprintf('==============================================\\n');
-fprintf(' Applied Processing:\\n');
-fprintf(' - Superpixel-based GrabCut segmentation\\n');
-fprintf(' - Foreground and background seeding\\n');
-fprintf(' - Morphological cleanup\\n');
-fprintf(' - Face/hair-friendly mask refinement\\n');
-fprintf(' - Feathered golden recoloring\\n');
-fprintf('==============================================\\n');
+fprintf('==============================================\n');
+fprintf('         PROJECT IN IMAGE PROCESSING\n');
+fprintf('==============================================\n');
+fprintf(' Task       : Task 1 - Image 2\n');
+fprintf(' Process    : Polygon-based people segmentation + golden recolor\n');
+fprintf(' Output     : Completed successfully\n');
+fprintf('==============================================\n');
+fprintf(' Applied Processing:\n');
+fprintf(' - 3 person polygon masks\n');
+fprintf(' - Mask smoothing and filling\n');
+fprintf(' - Edge feathering\n');
+fprintf(' - Golden recoloring of people only\n');
+fprintf('==============================================\n');
