@@ -135,10 +135,12 @@ function components = detectThreeSkinComponentsAuto(I)
         error('Automatic skin detection did not find 3 strong foreground face regions.');
     end
 
+    % From plausible set, keep the top 3 by area
     candidateAreas = areas(keep);
     [~, order2] = sort(candidateAreas, 'descend');
     keep = keep(order2(1:3));
 
+    % Build output masks
     components = struct('Mask', {}, 'BBox', {}, 'Centroid', {});
     for i = 1:3
         m = false(rows, cols);
@@ -148,6 +150,7 @@ function components = detectThreeSkinComponentsAuto(I)
         components(i).Centroid = stats(keep(i)).Centroid;
     end
 
+    % Sort left-to-right
     xcent = zeros(1,3);
     for i = 1:3
         xcent(i) = components(i).Centroid(1);
@@ -160,12 +163,16 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
     [rows, cols, ~] = size(I);
     I_double = im2double(I);
 
+    % Bounding box from automatic skin detection
     x = bbox(1);
     y = bbox(2);
     w = bbox(3);
 
+    % Use bbox width as main scale
     wFace = max(w, 120);
 
+    %% --------------------------------------------------------
+    %% Person-specific automatic parameters
     switch personIdx
         case 1   % LEFT
             cropLeftMul   = 0.80;
@@ -225,6 +232,8 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
             strapRightMul = 0.98;
     end
 
+    %% --------------------------------------------------------
+    %% Automatic crop derived from detected skin region
     x1 = max(1, round(x - cropLeftMul*wFace));
     x2 = min(cols, round(x + w + cropRightMul*wFace));
     y1 = max(1, round(y - cropTopMul*wFace));
@@ -234,8 +243,10 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
     IcropD = I_double(y1:y2, x1:x2, :);
     [hc, wc, ~] = size(Icrop);
 
+    % Local skin seed
     skinLocal = skinMaskGlobal(y1:y2, x1:x2);
 
+    % Local bbox of skin seed inside crop
     statsLocal = regionprops(skinLocal, 'BoundingBox', 'Centroid', 'Area');
     if isempty(statsLocal)
         error('Local skin seed disappeared after cropping.');
@@ -244,8 +255,11 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
     bb = statsLocal(biggestIdx).BoundingBox;
     cx = statsLocal(biggestIdx).Centroid(1);
 
+    % Use local bbox width as robust face scale
     wFace = max(bb(3), 120);
 
+    %% --------------------------------------------------------
+    %% Automatic hair detection above the skin region
     HSV = rgb2hsv(IcropD);
     H = HSV(:,:,1);
     S = HSV(:,:,2);
@@ -260,6 +274,8 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
     darkHair = bwareaopen(darkHair, 40);
     hairSeed = darkHair;
 
+    %% --------------------------------------------------------
+    %% Automatic body seeds from detected face/skin region
     faceSeed = imdilate(skinLocal, strel('disk', 3));
 
     bridgeMask = rectMaskCenter(cx, bb(2) + 1.10*wFace, bridgeWMul*wFace, bridgeHMul*wFace, hc, wc);
@@ -267,6 +283,7 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
     torsoSeed  = rectMaskCenter(cx, bb(2) + 1.95*wFace, 0.90*wFace, 0.70*wFace, hc, wc);
     torsoSearch = rectMaskCenter(cx, bb(2) + 2.20*wFace, 2.55*wFace, 2.60*wFace, hc, wc);
 
+    % Side/strap zones
     strapMask = false(hc, wc);
     if strapLeftMul > 0
         strapMask = strapMask | rectMaskCenter(cx - strapLeftMul*wFace, bb(2) + 2.05*wFace, 0.40*wFace, 2.20*wFace, hc, wc);
@@ -278,33 +295,45 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
         strapMask = rectMaskCenter(cx, bb(2) + 2.95*wFace, 0.55*wFace, 0.90*wFace, hc, wc);
     end
 
+    %% --------------------------------------------------------
+    %% Automatic envelope and ROI
     headEnv = ellipseMaskLocal(cx, bb(2) + headCyMul*wFace, headRxMul*wFace, headRyMul*wFace, hc, wc);
     bodyEnv = ellipseMaskLocal(cx, bb(2) + bodyCyMul*wFace, bodyRxMul*wFace, bodyRyMul*wFace, hc, wc);
     envelope = headEnv | bodyEnv | imdilate(bridgeMask, strel('disk', 6));
     roi = imdilate(envelope, strel('disk', 10));
 
+    %% --------------------------------------------------------
+    %% Foreground / background seed masks for GrabCut
     foremask = faceSeed | hairSeed | bridgeMask | shoulderFG | torsoSeed;
 
     backmask = false(hc, wc);
 
+    % Top margin above the head, but leave room for hair
     topBgEnd = max(1, round(bb(2) - 0.45*wFace));
     backmask(1:topBgEnd, :) = true;
 
+    % Side margins
     sideW = max(1, round(0.10*wc));
     backmask(:, 1:sideW) = true;
     backmask(:, max(1, wc-sideW+1):wc) = true;
 
+    % Background beside shoulders
     backmask = backmask | rectMaskCenter(cx - 1.65*wFace, bb(2) + 1.80*wFace, 0.70*wFace, 1.10*wFace, hc, wc);
     backmask = backmask | rectMaskCenter(cx + 1.65*wFace, bb(2) + 1.80*wFace, 0.70*wFace, 1.10*wFace, hc, wc);
 
+    % Do not override foreground
     backmask(foremask) = false;
 
+    %% --------------------------------------------------------
+    %% Base GrabCut segmentation
     numSuperpixels = max(400, round((hc*wc) / 2200));
     L = superpixels(Icrop, numSuperpixels);
 
     BW = grabcut(Icrop, L, roi, foremask, backmask, 'MaximumIterations', 6);
     BW = keepSeedComponents(BW, faceSeed | bridgeMask | torsoSeed);
 
+    %% --------------------------------------------------------
+    %% Torso color recovery from automatically sampled torso seed
     Lab = rgb2lab(IcropD);
     Lch = Lab(:,:,1);
     ach = Lab(:,:,2);
@@ -324,9 +353,11 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
     shirtCandidate = D < 4.8;
     shirtCandidate = shirtCandidate & torsoSearch;
 
+    % Require connectivity to torso seed
     marker = imdilate(torsoSeed, strel('disk', 4)) & torsoSearch;
     shirtCandidate = imreconstruct(marker, shirtCandidate | marker);
 
+    % If the sampled shirt is greenish, suppress brighter/more saturated grass on edges
     seedH = mean(H(torsoSeed));
     seedS = mean(S(torsoSeed));
     seedV = mean(V(torsoSeed));
@@ -339,13 +370,17 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
 
     shirtCandidate = bwareaopen(shirtCandidate, 180);
 
+    %% --------------------------------------------------------
+    %% Strap / dark side recovery
     darkLike = (V < 0.42) | ((S < 0.35) & (V < 0.60));
     strapCandidate = strapMask & darkLike & imdilate(BW | shirtCandidate | foremask, strel('disk', 10));
     strapCandidate = bwareaopen(strapCandidate, 80);
 
-
+    %% --------------------------------------------------------
+    %% Final local mask
     localMask = BW | shirtCandidate | strapCandidate | foremask;
 
+    % Keep mostly inside the automatic envelope, but always preserve foreground seeds
     localMask = (localMask & imdilate(envelope, strel('disk', 4))) | foremask;
 
     localMask = imfill(localMask, 'holes');
@@ -353,8 +388,10 @@ function fullMask = segmentPersonFromSkinAuto(I, skinMaskGlobal, bbox, personIdx
     localMask = imclose(localMask, strel('disk', 4));
     localMask = imopen(localMask, strel('disk', 1));
 
+    % Keep only subject-connected pieces
     localMask = keepSeedComponents(localMask, foremask | torsoSeed | strapCandidate);
 
+    %% Write back to full image
     fullMask = false(rows, cols);
     fullMask(y1:y2, x1:x2) = localMask;
 end
