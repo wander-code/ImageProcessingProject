@@ -1,6 +1,4 @@
 %% TASK 3 - IMAGE 1
-% Create a portrait blur effect by keeping only the cat in focus
-% File: task3_img1.m
 
 clc;
 clear;
